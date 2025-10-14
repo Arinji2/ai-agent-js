@@ -11,91 +11,98 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+export const CatFactSchema = z.object({
+	fact: z.string(),
+	length: z.number(),
+});
+
 export async function GET(req) {
-    try {
-        const GraphState = Annotation.Root({
-            messages: Annotation({
-                reducer: (x, y) => x.concat(y),
-            }),
-        });
+	try {
+		const GraphState = Annotation.Root({
+			messages: Annotation({
+				reducer: (x, y) => x.concat(y),
+			}),
+		});
 
-        const search = new TavilySearchResults({
-            maxResults: 2,
-        });
+		const search = new TavilySearchResults({
+			maxResults: 2,
+		});
 
-        const weatherTool = tool(
-            async ({ query }) => {
-                if (
-                    query.toLowerCase().includes("sf") ||
-                    query.toLowerCase().includes("san francisco")
-                ) {
-                    return "It's 60 degrees and foggy.";
-                }
-                return "It's 90 degrees and sunny.";
-            },
-            {
-                name: "weather",
-                description: "Call to get the current weather for a location.",
-                schema: z.object({
-                    query: z
-                        .string()
-                        .describe("The query to use in your search."),
-                }),
-            }
-        );
+		const catTool = tool(
+			async () => {
+				try {
+					const res = await fetch("https://catfact.ninja/fact");
+					const data = await res.json();
+					const parsedData = CatFactSchema.parse(data);
+					return parsedData.fact;
+				} catch (error) {
+					console.error("Error fetching cat fact:", error);
+					return "An error occurred while fetching the cat fact.";
+				}
+			},
+			{
+				name: "cat",
+				description: "Get a random cat fact",
+			},
+		);
 
-        const tools = [search];
-        const toolNode = new ToolNode(tools);
+		const tools = [search, catTool];
+		const toolNode = new ToolNode(tools);
 
-        const model = new ChatGoogleGenerativeAI({
-            model: "gemini-1.5-pro",
-            maxOutputTokens: 2048,
-            apiKey: process.env.GOOGLE_API_KEY,
-        }).bindTools(tools);
+		const model = new ChatGoogleGenerativeAI({
+			model: "gemini-2.5-flash",
+			maxOutputTokens: 2048,
+			apiKey: process.env.GOOGLE_API_KEY,
+		}).bindTools(tools);
 
-        //when it stop
-        function shouldContinue(state) {
-            const messages = state.messages;
-            const lastMessage = messages[messages.length - 1];
+		//when it stop
+		function shouldContinue(state) {
+			const messages = state.messages;
+			const lastMessage = messages[messages.length - 1];
 
-            if (lastMessage.tool_calls?.length) {
-                return "tools";
-            }
-            return "__end__";
-        }
+			if (lastMessage.tool_calls?.length) {
+				return "tools";
+			}
+			return "__end__";
+		}
 
-        async function callModel(state) {
-            const messages = state.messages;
-            const response = await model.invoke(messages);
+		async function callModel(state) {
+			const messages = state.messages;
+			const response = await model.invoke(messages);
 
-            return { messages: [response] };
-        }
+			return { messages: [response] };
+		}
 
-        const workflow = new StateGraph(GraphState)
-            .addNode("agent", callModel)
-            .addNode("tools", toolNode)
-            .addEdge("__start__", "agent")
-            .addConditionalEdges("agent", shouldContinue)
-            .addEdge("tools", "agent");
+		const workflow = new StateGraph(GraphState)
+			.addNode("agent", callModel)
+			.addNode("tools", toolNode)
+			.addEdge("__start__", "agent")
+			.addConditionalEdges("agent", shouldContinue)
+			.addEdge("tools", "agent");
 
-        const checkpointer = new MemorySaver();
+		const checkpointer = new MemorySaver();
 
-        const app = workflow.compile({ checkpointer });
+		const app = workflow.compile({ checkpointer });
 
-        const finalState = await app.invoke(
-            {
-                messages: [
-                    new HumanMessage("who is winning gold olympics 2024"),
-                ],
-            },
-            { configurable: { thread_id: "42" } }
-        );
+		const finalState = await app.invoke(
+			{
+				messages: [
+					new HumanMessage(
+						"who is winning gold olympics 2024. Also provide me with a random cat fact",
+					),
+				],
+			},
+			{ configurable: { thread_id: "43" } },
+		);
 
-        return NextResponse.json({
-            response: finalState,
-        });
-    } catch (error) {
-        console.log(error);
-        return NextResponse.json(error.message);
-    }
+		return NextResponse.json({
+			response: {
+				running: finalState,
+				final: finalState.messages[finalState.messages.length - 1].content,
+			},
+		});
+	} catch (error) {
+		console.log(error);
+		return NextResponse.json(error.message);
+	}
 }
